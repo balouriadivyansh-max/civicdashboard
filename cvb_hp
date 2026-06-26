@@ -1,0 +1,90 @@
+
+import os
+import requests
+from supabase import create_client, Client
+
+# --- Configuration & Credentials ---
+# Replace these with your actual Supabase credentials or use environment variables
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "your-supabase-url")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "your-supabase-service-role-key")
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# Geographic coordinates for the districts
+DISTRICTS = {
+    "Kangra": {"lat": 32.10, "lon": 76.27},
+    "Shimla": {"lat": 31.10, "lon": 77.17}
+}
+
+# Standard WMO Weather codes to map numbers to readable descriptions
+WMO_CODES = {
+    0: "Clear sky",
+    1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+    45: "Fog", 48: "Depositing rime fog",
+    51: "Light drizzle", 53: "Moderate drizzle", 55: "Dense drizzle",
+    61: "Light rain", 63: "Moderate rain", 65: "Heavy rain",
+    71: "Light snow", 73: "Moderate snow", 75: "Heavy snow",
+    95: "Thunderstorm"
+}
+
+def get_weather_desc(code):
+    return WMO_CODES.get(code, "Unknown weather")
+
+def fetch_weather_and_aqi(lat, lon):
+    """Fetches live weather and AQI data from Open-Meteo."""
+    
+    # 1. Fetch Weather (Temperature & Code)
+    weather_url = "https://api.open-meteo.com/v1/forecast"
+    weather_params = {
+        "latitude": lat,
+        "longitude": lon,
+        "current": "temperature_2m,weather_code"
+    }
+    weather_resp = requests.get(weather_url, params=weather_params).json()
+    
+    current_weather = weather_resp.get("current", {})
+    temp = current_weather.get("temperature_2m", 0)
+    wmo_code = current_weather.get("weather_code", 0)
+    
+    weather_desc = get_weather_desc(wmo_code)
+    weather_string = f"{weather_desc}, {temp}°C"
+
+    # 2. Fetch AQI (US AQI standard)
+    aqi_url = "https://air-quality-api.open-meteo.com/v1/air-quality"
+    aqi_params = {
+        "latitude": lat,
+        "longitude": lon,
+        "current": "us_aqi"
+    }
+    aqi_resp = requests.get(aqi_url, params=aqi_params).json()
+    
+    current_aqi_data = aqi_resp.get("current", {})
+    aqi = current_aqi_data.get("us_aqi", 0)
+
+    return weather_string, aqi
+
+def update_district_data():
+    """Iterates through districts, fetches data, and updates Supabase."""
+    
+    for district, coords in DISTRICTS.items():
+        print(f"Fetching data for {district}...")
+        
+        try:
+            weather_str, aqi = fetch_weather_and_aqi(coords["lat"], coords["lon"])
+            print(f" -> Live Data: AQI {aqi}, Weather: {weather_str}")
+            
+            # Execute the UPDATE operation in Supabase
+            response = (
+                supabase.table("hp_districts")
+                .update({"aqi": aqi, "weather": weather_str})
+                .eq("district_name", district)
+                .execute()
+            )
+            
+            print(f" -> Database update successful for {district}!\n")
+            
+        except Exception as e:
+            print(f" -> Error updating {district}: {e}\n")
+
+if __name__ == "__main__":
+    update_district_data()
